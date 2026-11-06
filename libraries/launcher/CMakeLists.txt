@@ -1,0 +1,31 @@
+cmake_minimum_required(VERSION 3.9.4)
+project(launcher Java)
+find_package(Java 1.8 REQUIRED COMPONENTS Development)
+
+include(UseJava)
+set(CMAKE_JAVA_JAR_ENTRY_POINT org.polymc.EntryPoint)
+set(CMAKE_JAVA_COMPILE_FLAGS -target 8 -source 8 -Xlint:deprecation -Xlint:unchecked)
+
+set(SRC
+    org/polymc/EntryPoint.java
+    org/polymc/Launcher.java
+    org/polymc/LauncherFactory.java
+    org/polymc/impl/OneSixLauncher.java
+    org/polymc/applet/LegacyFrame.java
+    org/polymc/exception/ParameterNotFoundException.java
+    org/polymc/exception/ParseException.java
+    org/polymc/utils/Parameters.java
+    org/polymc/utils/Utils.java
+    net/minecraft/Launcher.java
+    com/mojang/patchy/BlockedServers.java
+)
+add_jar(NewLaunch ${SRC})
+install_jar(NewLaunch "${JARS_DEST_DIR}")
+
+include(GNUInstallDirs)
+install(FILES legacy-jar-security.properties
+    DESTINATION ${PROP_DEST_DIR})
+
+# needed for local builds
+file(COPY_FILE legacy-jar-security.properties
+    ${CMAKE_BINARY_DIR}/legacy-jar-security.properties)

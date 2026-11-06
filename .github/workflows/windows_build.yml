@@ -1,0 +1,163 @@
+name: RustPrizm Windows Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+    tags:
+      - 'v*'
+    paths-ignore:
+      - '**.md'
+      - '.gitignore'
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Type'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - Release
+          - Debug
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: "Windows x64 (Qt 6)"
+    runs-on: windows-2022
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          fetch-depth: 0
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: windows-x64-qt6
+          max-size: 1G
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        id: msys2
+        with:
+          msystem: MINGW64
+          update: true
+          install: git
+          pacboy: >-
+            toolchain:p
+            cmake:p
+            extra-cmake-modules:p
+            ninja:p
+            7zip:p
+            ccache:p
+            qt6-base:p
+            qt6-svg:p
+            qt6-imageformats:p
+            qt6-charts:p
+            qt6-5compat:p
+            quazip-qt6:p
+            nsis:u
+
+      - name: Put MSYS2 location in env
+        shell: bash
+        run: echo "MSYS2_LOCATION=${{ steps.msys2.outputs.msys2-location }}" >> "$GITHUB_ENV"
+
+      - name: Compute Version String
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VER="${{ github.ref_name }}"
+          else
+            VER="$(git rev-parse --short=10 HEAD 2>/dev/null || echo 'snapshot')"
+          fi
+          echo "VERSION=${VER}" >> "$GITHUB_ENV"
+
+      - name: Configure CMake
+        shell: msys2 {0}
+        run: |
+          BUILD_TYPE="${{ github.event.inputs.build_type || 'Release' }}"
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DENABLE_LTO=ON \
+            -DUSE_CCACHE=ON \
+            -DLauncher_QT_VERSION_MAJOR=6 \
+            -DCMAKE_INSTALL_PREFIX="$PWD/install"
+
+      - name: Build RustPrizm
+        shell: msys2 {0}
+        run: cmake --build build --config "${{ github.event.inputs.build_type || 'Release' }}"
+
+      - name: Package Portable ZIP & Setup Installer
+        shell: msys2 {0}
+        run: |
+          set -ex
+          ROOTDIR="$PWD"
+          INSTALL="$PWD/install"
+          INSTALL_PORTABLE="$PWD/install-portable"
+          BUILD="$PWD/build"
+          ARTIFACTS="$PWD/artifacts"
+
+          mkdir -p "$ARTIFACTS"
+
+          # 1. Install regular build
+          cmake --install "$BUILD" --prefix "$INSTALL"
+
+          # 2. Install portable build with portable.txt
+          cp -r "$INSTALL" "$INSTALL_PORTABLE"
+          cmake --install "$BUILD" --prefix "$INSTALL_PORTABLE" --component portable
+
+          # 3. Create Portable Zip
+          cd "$INSTALL_PORTABLE"
+          7z a -tzip "$ARTIFACTS/RustPrizm-Windows-Portable-x64-${VERSION}.zip" ./*
+          cd "$ROOTDIR"
+
+          # 4. Build NSIS setup installer
+          export PATH="$PATH:${MSYS2_LOCATION}/ucrt64/bin"
+          cd "$INSTALL"
+          makensis -NOCD "$BUILD/program_info/win_install.nsi"
+          cd "$ROOTDIR"
+
+          # 5. Move setup executable to artifacts
+          if [ -f "RustPrizm-Setup.exe" ]; then
+            cp "RustPrizm-Setup.exe" "$ARTIFACTS/RustPrizm-Windows-Setup-x64-${VERSION}.exe"
+          elif ls *Setup*.exe 1> /dev/null 2>&1; then
+            cp *Setup*.exe "$ARTIFACTS/RustPrizm-Windows-Setup-x64-${VERSION}.exe"
+          else
+            cp *.exe "$ARTIFACTS/RustPrizm-Windows-Setup-x64-${VERSION}.exe"
+          fi
+
+          echo "Generated artifacts:"
+          ls -lh "$ARTIFACTS"
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: RustPrizm-Windows-x64-${{ env.VERSION }}
+          path: artifacts/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "RustPrizm ${{ github.ref_name }}"
+          tag_name: ${{ github.ref }}
+          files: |
+            artifacts/*.exe
+            artifacts/*.zip
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

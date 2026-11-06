@@ -1,0 +1,52 @@
+name: Build Application and Make Release
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+
+  build_release:
+    name: Build Release
+    uses: ./.github/workflows/build.yml
+    with:
+      build_type: Release
+      version: ${{ github.ref_name }}
+      devel: "false"
+    secrets:
+      SPARKLE_ED25519_KEY: ${{ secrets.SPARKLE_ED25519_KEY }}
+
+  create_release:
+    needs: build_release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+          path: 'RustPrizm-source'
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Grab and store version
+        run: echo "VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+
+      - name: Package artifacts properly
+        run: ./.ci/pack.sh
+
+      - name: Create release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          name: RustPrizm ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: dist/*

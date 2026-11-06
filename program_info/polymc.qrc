@@ -1,0 +1,7 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file>org.polymc.PolyMC.svg</file>
+        <file>org.polymc.PolyMC.png</file>
+    </qresource>
+</RCC>
