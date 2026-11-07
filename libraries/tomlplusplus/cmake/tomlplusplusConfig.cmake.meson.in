@@ -1,0 +1,29 @@
+@PACKAGE_INIT@
+
+# If tomlplusplus::tomlplusplus target is not defined it will be included
+if(NOT TARGET tomlplusplus::tomlplusplus)
+
+  if (@compile_library@)
+    set(imported_type UNKNOWN)
+  else()
+    set(imported_type INTERFACE)
+  endif()
+
+  # Import tomlplusplus interface library
+  add_library(tomlplusplus::tomlplusplus ${imported_type} IMPORTED)
+  set_target_properties(tomlplusplus::tomlplusplus PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${PACKAGE_PREFIX_DIR}/@includedir@")
+
+  # Require C++17
+  set_property(TARGET tomlplusplus::tomlplusplus APPEND PROPERTY INTERFACE_COMPILE_FEATURES cxx_std_17)
+
+  # Set the path to the installed library so that users can link to it
+  if (@compile_library@)
+    set_target_properties(tomlplusplus::tomlplusplus PROPERTIES
+      IMPORTED_LOCATION "${PACKAGE_PREFIX_DIR}/@libdir@/@lib_name@"
+    )
+    # compile_options not quoted on purpose
+    set_property(TARGET tomlplusplus::tomlplusplus APPEND PROPERTY INTERFACE_COMPILE_OPTIONS @compile_options@)
+  endif()
+
+endif()

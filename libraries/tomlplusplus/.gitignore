@@ -1,0 +1,37 @@
+emojis.json
+UnicodeData.txt
+meson-info/
+meson-logs/
+meson-private/
+*.o
+.ninja_*
+build.ninja
+compile_commands.json
+[Bb]uild*/
+/out/
+*.profraw
+.ruff_cache/
+.venv/
+__pycache__/
+/corpus/
+/unit_tests
+
+# documentation
+*.xml
+*.xslt
+*.xsd
+*.html
+*.temp
+docs/html
+docs/xml
+
+# editors
+.vs/
+.vscode/
+.idea/
+/.cache/clangd
+
+# windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
