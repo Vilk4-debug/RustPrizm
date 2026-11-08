@@ -55,7 +55,8 @@ QByteArray PrepareHorizonStep::httpGet(const QString &urlStr, int *statusCodeOut
 {
     QString currentUrl = urlStr;
     for (int redirects = 0; redirects < 10 && !m_aborted; ++redirects) {
-        QNetworkRequest req(QUrl(currentUrl));
+        QUrl url(currentUrl);
+        QNetworkRequest req(url);
         req.setHeader(QNetworkRequest::UserAgentHeader, "PolyMC/8.1");
 #if QT_VERSION >= QT_VERSION_CHECK(5, 9, 0)
         req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
@@ -112,7 +113,8 @@ bool PrepareHorizonStep::downloadFile(const QString &urlStr, const QString &dest
 {
     QString currentUrl = urlStr;
     for (int redirects = 0; redirects < 10 && !m_aborted; ++redirects) {
-        QNetworkRequest req(QUrl(currentUrl));
+        QUrl url(currentUrl);
+        QNetworkRequest req(url);
         req.setHeader(QNetworkRequest::UserAgentHeader, "PolyMC/8.1");
 #if QT_VERSION >= QT_VERSION_CHECK(5, 9, 0)
         req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);

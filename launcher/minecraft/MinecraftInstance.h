@@ -159,7 +159,7 @@ public:
 
     virtual JavaVersion getJavaVersion();
 
-    bool useHorizonEngine() const;
+    bool useHorizonEngine();
 
 protected:
     QMap<QString, QString> createCensorFilterFromSession(AuthSessionPtr session);

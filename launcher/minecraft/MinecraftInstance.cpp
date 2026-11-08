@@ -1217,7 +1217,7 @@ QList<Mod*> MinecraftInstance::getJarMods() const
 }
 
 
-bool MinecraftInstance::useHorizonEngine() const
+bool MinecraftInstance::useHorizonEngine()
 {
     return settings()->get("UseHorizonEngine").toBool();
 }
