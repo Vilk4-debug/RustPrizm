@@ -25,6 +25,7 @@
 #include <QUrl>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QFileDevice>
 #include <QEventLoop>
 #include <QNetworkRequest>
@@ -242,70 +243,119 @@ bool PrepareHorizonStep::ensureBinaries(const QString &horizonDir)
         return true;
     }
 
-    emit logLine("Horizon binaries not found in " + horizonDir + ". Fetching build from GitHub...", MessageLevel::Launcher);
+    emit logLine("Horizon binaries not found in " + horizonDir + ". Fetching Windows x64 build...", MessageLevel::Launcher);
 
-    auto extractAssetUrl = [](const QJsonObject &releaseObj) -> QString {
-        if (releaseObj.contains("assets") && releaseObj["assets"].isArray()) {
-            for (const auto &val : releaseObj["assets"].toArray()) {
-                if (val.isObject()) {
-                    auto assetObj = val.toObject();
-                    QString name = assetObj.value("name").toString();
-                    if (name == "horizon-windows-x64.zip" ||
-                        (name.startsWith("horizon-") && name.endsWith(".zip"))) {
-                        return assetObj.value("browser_download_url").toString();
-                    }
-                }
-            }
-        }
-        return QString();
-    };
+    QString zipPath = FS::PathCombine(horizonDir, "horizon-windows-x64.zip");
+    const QString directNightlyUrl = "https://github.com/horizon-rust/horizon/releases/download/nightly/horizon-windows-x64.zip";
 
-    QString downloadUrl;
-    int statusCode = 0;
+    bool downloaded = false;
 
-    // 1. Try nightly tag release
-    QByteArray data = httpGet("https://api.github.com/repos/horizon-rust/horizon/releases/tags/nightly", &statusCode);
-    if (!data.isEmpty()) {
-        QJsonDocument doc = QJsonDocument::fromJson(data);
-        if (doc.isObject()) {
-            downloadUrl = extractAssetUrl(doc.object());
+    // 1. Prioritize direct download link
+    emit logLine("Attempting direct download of Horizon package: " + directNightlyUrl, MessageLevel::Launcher);
+    if (downloadFile(directNightlyUrl, zipPath)) {
+        QFileInfo fi(zipPath);
+        if (fi.exists() && fi.size() >= 102400) {
+            downloaded = true;
+        } else {
+            emit logLine("Direct download did not provide a valid archive, falling back to GitHub API...", MessageLevel::Warning);
+            QFile::remove(zipPath);
         }
     }
 
-    // 2. Fallback to /releases list
-    if (downloadUrl.isEmpty()) {
-        emit logLine("Nightly asset not found. Checking latest releases...", MessageLevel::Launcher);
-        data = httpGet("https://api.github.com/repos/horizon-rust/horizon/releases", &statusCode);
+    // 2. If direct download did not succeed, search GitHub Releases API strictly for windows-x64
+    if (!downloaded) {
+        auto isMatchingAsset = [](const QString &name) -> bool {
+            QString lower = name.toLower();
+            return lower.endsWith(".zip") && lower.contains("windows") && lower.contains("x64");
+        };
+
+        auto extractAssetUrl = [&](const QJsonObject &releaseObj) -> QString {
+            if (releaseObj.contains("assets") && releaseObj["assets"].isArray()) {
+                for (const auto &val : releaseObj["assets"].toArray()) {
+                    if (val.isObject()) {
+                        auto assetObj = val.toObject();
+                        QString name = assetObj.value("name").toString();
+                        if (isMatchingAsset(name)) {
+                            return assetObj.value("browser_download_url").toString();
+                        }
+                    }
+                }
+            }
+            return QString();
+        };
+
+        QString downloadUrl;
+        int statusCode = 0;
+
+        // Try nightly tag release
+        emit logLine("Checking GitHub Releases API for nightly tag...", MessageLevel::Launcher);
+        QByteArray data = httpGet("https://api.github.com/repos/horizon-rust/horizon/releases/tags/nightly", &statusCode);
         if (!data.isEmpty()) {
             QJsonDocument doc = QJsonDocument::fromJson(data);
-            if (doc.isArray()) {
-                for (const auto &relVal : doc.array()) {
-                    if (relVal.isObject()) {
-                        downloadUrl = extractAssetUrl(relVal.toObject());
-                        if (!downloadUrl.isEmpty()) {
-                            break;
+            if (doc.isObject()) {
+                downloadUrl = extractAssetUrl(doc.object());
+            }
+        }
+
+        // Fallback to /releases list
+        if (downloadUrl.isEmpty()) {
+            emit logLine("Nightly tag asset not found via API. Checking all releases...", MessageLevel::Launcher);
+            data = httpGet("https://api.github.com/repos/horizon-rust/horizon/releases", &statusCode);
+            if (!data.isEmpty()) {
+                QJsonDocument doc = QJsonDocument::fromJson(data);
+                if (doc.isArray()) {
+                    for (const auto &relVal : doc.array()) {
+                        if (relVal.isObject()) {
+                            downloadUrl = extractAssetUrl(relVal.toObject());
+                            if (!downloadUrl.isEmpty()) {
+                                break;
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    if (downloadUrl.isEmpty()) {
-        emit logLine("Failed to locate horizon-windows-x64.zip on GitHub releases.", MessageLevel::Error);
-        return false;
-    }
+        if (downloadUrl.isEmpty()) {
+            emit logLine("Failed to locate horizon-windows-x64.zip in GitHub releases.", MessageLevel::Error);
+            return false;
+        }
 
-    QString zipPath = FS::PathCombine(horizonDir, "horizon-windows-x64.zip");
-    emit logLine("Downloading Horizon package: " + downloadUrl, MessageLevel::Launcher);
-    if (!downloadFile(downloadUrl, zipPath)) {
-        emit logLine("Failed to download Horizon archive.", MessageLevel::Error);
-        return false;
+        emit logLine("Downloading Horizon package: " + downloadUrl, MessageLevel::Launcher);
+        if (!downloadFile(downloadUrl, zipPath)) {
+            emit logLine("Failed to download Horizon archive.", MessageLevel::Error);
+            return false;
+        }
+
+        QFileInfo fi(zipPath);
+        if (!fi.exists() || fi.size() < 102400) {
+            emit logLine("Downloaded Horizon archive is invalid or empty.", MessageLevel::Error);
+            QFile::remove(zipPath);
+            return false;
+        }
     }
 
     emit logLine("Extracting Horizon binaries to " + horizonDir + " ...", MessageLevel::Launcher);
     auto extracted = MMCZip::extractDir(zipPath, horizonDir);
     QFile::remove(zipPath);
+
+    // If archive had an internal root folder 'horizon-windows-x64', move files up to horizonDir
+    QString subDir = FS::PathCombine(horizonDir, "horizon-windows-x64");
+    if (QDir(subDir).exists()) {
+        QDir sDir(subDir);
+        for (const auto &entry : sDir.entryInfoList(QDir::NoDotAndDotDot | QDir::AllEntries)) {
+            QString dest = FS::PathCombine(horizonDir, entry.fileName());
+            if (QFile::exists(dest)) {
+                if (entry.isDir()) {
+                    FS::deletePath(dest);
+                } else {
+                    QFile::remove(dest);
+                }
+            }
+            QFile::rename(entry.absoluteFilePath(), dest);
+        }
+        sDir.removeRecursively();
+    }
 
     if (!extracted.has_value() || !QFile::exists(clientExe) || !QFile::exists(prepareExe)) {
         emit logLine("Failed to extract Horizon binaries or binaries missing after extraction.", MessageLevel::Error);
@@ -318,20 +368,77 @@ bool PrepareHorizonStep::ensureBinaries(const QString &horizonDir)
 
 bool PrepareHorizonStep::ensureServerJar(const QString &horizonDir, const QString &dataRoot)
 {
+    // 1. Ensure official Mojang versions/26.3/26.3.json exists and is valid (>= 2 KB)
+    QString versionsDir = FS::PathCombine(dataRoot, "versions/26.3");
+    FS::ensureFolderPathExists(versionsDir);
+
+    QString versionJsonPath = FS::PathCombine(versionsDir, "26.3.json");
+    bool hasValidVersionJson = false;
+
+    QFileInfo jsonInfo(versionJsonPath);
+    if (jsonInfo.exists() && jsonInfo.size() >= 2048) {
+        hasValidVersionJson = true;
+    }
+
+    if (!hasValidVersionJson) {
+        emit logLine("Official Mojang 26.3.json missing or smaller than 2 KB. Fetching manifest from Mojang...", MessageLevel::Launcher);
+        QString versionJsonUrl;
+
+        QByteArray manifestData = httpGet("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
+        if (!manifestData.isEmpty()) {
+            QJsonDocument manifestDoc = QJsonDocument::fromJson(manifestData);
+            if (manifestDoc.isObject() && manifestDoc.object().contains("versions")) {
+                for (const auto &verVal : manifestDoc.object()["versions"].toArray()) {
+                    if (verVal.isObject()) {
+                        auto verObj = verVal.toObject();
+                        if (verObj.value("id").toString() == "26.3") {
+                            versionJsonUrl = verObj.value("url").toString();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (versionJsonUrl.isEmpty()) {
+            versionJsonUrl = "https://piston-meta.mojang.com/v1/packages/9f67e10ed013deeaad20ac3c800652765d493408/26.3.json";
+        }
+
+        emit logLine("Downloading official Minecraft 26.3 version JSON from " + versionJsonUrl, MessageLevel::Launcher);
+        QByteArray verJsonData = httpGet(versionJsonUrl);
+        if (verJsonData.size() >= 2048) {
+            QFile outFile(versionJsonPath);
+            if (outFile.open(QIODevice::WriteOnly)) {
+                outFile.write(verJsonData);
+                outFile.close();
+                emit logLine("Successfully saved official Mojang 26.3.json to " + versionJsonPath, MessageLevel::Launcher);
+                hasValidVersionJson = true;
+            } else {
+                emit logLine("Cannot open " + versionJsonPath + " for writing.", MessageLevel::Error);
+            }
+        } else {
+            emit logLine("Failed to download official Mojang 26.3.json (data smaller than 2 KB).", MessageLevel::Error);
+        }
+    }
+
+    if (!hasValidVersionJson) {
+        emit logLine("Error: Required official Mojang manifest " + versionJsonPath + " could not be obtained.", MessageLevel::Error);
+        return false;
+    }
+
+    // 2. Check server-jars/26.3.jar
     QString serverJarsDir = FS::PathCombine(horizonDir, "server-jars");
     FS::ensureFolderPathExists(serverJarsDir);
 
     QString serverJarPath = FS::PathCombine(serverJarsDir, "26.3.jar");
-    if (QFile::exists(serverJarPath)) {
+    if (QFile::exists(serverJarPath) && QFileInfo(serverJarPath).size() >= 102400) {
         emit logLine("Minecraft 26.3 server.jar found.", MessageLevel::Launcher);
         return true;
     }
 
-    emit logLine("Minecraft 26.3 server.jar not found. Searching for download URL...", MessageLevel::Launcher);
+    emit logLine("Minecraft 26.3 server.jar not found. Extracting server URL from " + versionJsonPath + " ...", MessageLevel::Launcher);
 
     QString serverUrl;
-
-    // Helper lambda to find "downloads.server.url" from JSON
     auto extractServerUrl = [](const QJsonObject &obj) -> QString {
         if (obj.contains("downloads") && obj["downloads"].isObject()) {
             auto downloads = obj["downloads"].toObject();
@@ -348,67 +455,29 @@ bool PrepareHorizonStep::ensureServerJar(const QString &horizonDir, const QStrin
         return QString();
     };
 
-    // 1. Try <dataRoot>/meta/net.minecraft/26.3.json
-    QString metaPath = FS::PathCombine(dataRoot, "meta/net.minecraft/26.3.json");
-    if (QFile::exists(metaPath)) {
-        QFile file(metaPath);
-        if (file.open(QIODevice::ReadOnly)) {
-            QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-            if (doc.isObject()) {
-                serverUrl = extractServerUrl(doc.object());
-            }
+    QFile file(versionJsonPath);
+    if (file.open(QIODevice::ReadOnly)) {
+        QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+        if (doc.isObject()) {
+            serverUrl = extractServerUrl(doc.object());
         }
-    }
-
-    // 2. Try <dataRoot>/versions/26.3/26.3.json
-    if (serverUrl.isEmpty()) {
-        QString verPath = FS::PathCombine(dataRoot, "versions/26.3/26.3.json");
-        if (QFile::exists(verPath)) {
-            QFile file(verPath);
-            if (file.open(QIODevice::ReadOnly)) {
-                QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-                if (doc.isObject()) {
-                    serverUrl = extractServerUrl(doc.object());
-                }
-            }
-        }
-    }
-
-    // 3. Fallback: Query Mojang Version Manifest V2
-    if (serverUrl.isEmpty()) {
-        emit logLine("Querying Mojang version manifest for 26.3 server.jar...", MessageLevel::Launcher);
-        QByteArray manifestData = httpGet("https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
-        if (!manifestData.isEmpty()) {
-            QJsonDocument manifestDoc = QJsonDocument::fromJson(manifestData);
-            if (manifestDoc.isObject() && manifestDoc.object().contains("versions")) {
-                for (const auto &verVal : manifestDoc.object()["versions"].toArray()) {
-                    if (verVal.isObject()) {
-                        auto verObj = verVal.toObject();
-                        if (verObj.value("id").toString() == "26.3") {
-                            QString versionJsonUrl = verObj.value("url").toString();
-                            if (!versionJsonUrl.isEmpty()) {
-                                QByteArray verJsonData = httpGet(versionJsonUrl);
-                                QJsonDocument verDoc = QJsonDocument::fromJson(verJsonData);
-                                if (verDoc.isObject()) {
-                                    serverUrl = extractServerUrl(verDoc.object());
-                                }
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-        }
+        file.close();
     }
 
     if (serverUrl.isEmpty()) {
-        emit logLine("Could not find Minecraft 26.3 server.jar download URL in local metadata or Mojang API.", MessageLevel::Error);
-        return false;
+        serverUrl = "https://piston-data.mojang.com/v1/objects/33680f5f2ac32864d6d7cf5e56a705fdb3e05f4c/server.jar";
     }
 
     emit logLine("Downloading 26.3 server.jar from: " + serverUrl, MessageLevel::Launcher);
     if (!downloadFile(serverUrl, serverJarPath)) {
         emit logLine("Failed to download Minecraft 26.3 server.jar.", MessageLevel::Error);
+        return false;
+    }
+
+    QFileInfo sfi(serverJarPath);
+    if (!sfi.exists() || sfi.size() < 102400) {
+        emit logLine("Downloaded server.jar is invalid or empty.", MessageLevel::Error);
+        QFile::remove(serverJarPath);
         return false;
     }
 
@@ -422,6 +491,46 @@ bool PrepareHorizonStep::runPrepareStep(const QString &horizonDir, const QString
     if (QFile::exists(manifestPath)) {
         emit logLine("Horizon resources already prepared (horizon-resources.json found).", MessageLevel::Launcher);
         return true;
+    }
+
+    // Ensure versions/26.3 directory exists
+    QString versionsDir = FS::PathCombine(dataRoot, "versions/26.3");
+    FS::ensureFolderPathExists(versionsDir);
+
+    // Verify versions/26.3/26.3.json exists
+    QString versionJsonPath = FS::PathCombine(versionsDir, "26.3.json");
+    if (!QFile::exists(versionJsonPath) || QFileInfo(versionJsonPath).size() < 2048) {
+        emit logLine("Error: Required manifest " + versionJsonPath + " is missing or invalid before running horizon-prepare.", MessageLevel::Error);
+        return false;
+    }
+
+    // Ensure versions/26.3/26.3.jar exists
+    QString versionJarPath = FS::PathCombine(versionsDir, "26.3.jar");
+    if (!QFile::exists(versionJarPath) || QFileInfo(versionJarPath).size() < 102400) {
+        QString clientJarPath = FS::PathCombine(dataRoot, "libraries/com/mojang/minecraft/26.3/minecraft-26.3-client.jar");
+        if (QFile::exists(clientJarPath) && QFileInfo(clientJarPath).size() > 102400) {
+            emit logLine("Copying client jar from " + clientJarPath + " to " + versionJarPath + " ...", MessageLevel::Launcher);
+            if (QFile::exists(versionJarPath)) {
+                QFile::remove(versionJarPath);
+            }
+            if (!QFile::copy(clientJarPath, versionJarPath)) {
+                emit logLine("Failed to copy client jar to " + versionJarPath, MessageLevel::Error);
+                return false;
+            }
+        } else {
+            // Fallback: download client jar directly from Mojang
+            emit logLine("Client jar not found at " + clientJarPath + ". Downloading 26.3 client.jar to " + versionJarPath + " ...", MessageLevel::Launcher);
+            const QString clientUrl = "https://piston-data.mojang.com/v1/objects/e877b6a07acd633fb3bb475002175cec036e7b87/client.jar";
+            if (!downloadFile(clientUrl, versionJarPath)) {
+                emit logLine("Failed to download client jar.", MessageLevel::Error);
+                return false;
+            }
+        }
+    }
+
+    if (!QFile::exists(versionJarPath) || QFileInfo(versionJarPath).size() < 102400) {
+        emit logLine("Error: Required client jar " + versionJarPath + " is missing or corrupt.", MessageLevel::Error);
+        return false;
     }
 
 #ifdef Q_OS_WIN
@@ -500,9 +609,9 @@ void PrepareHorizonStep::executeTask()
         return;
     }
 
-    emit logLine("=== Step 2/3: Checking Minecraft 26.3 server.jar ===", MessageLevel::Launcher);
+    emit logLine("=== Step 2/3: Checking Minecraft 26.3 server.jar and official version manifest ===", MessageLevel::Launcher);
     if (!ensureServerJar(horizonDir, dataRoot)) {
-        emitFailed(tr("Failed to obtain Minecraft 26.3 server.jar."));
+        emitFailed(tr("Failed to obtain Minecraft 26.3 server.jar or version manifest."));
         return;
     }
 
